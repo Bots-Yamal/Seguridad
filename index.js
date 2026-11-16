@@ -1,4 +1,3 @@
-
 const {
   Client,
   GatewayIntentBits,
@@ -13,7 +12,8 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  AuditLogEvent
+  AuditLogEvent,
+  ComponentType
 } = require("discord.js");
 
 const fs = require("fs");
@@ -68,6 +68,17 @@ const defaultServer = () => ({
   cases: [],
   whitelist: [],
 
+  reports: [],
+  securityLogs: [],
+  securityChannel: null,
+
+  automod: {
+    enabled: false,
+    words: [],
+    linkMode: "off",
+    allowedDomains: []
+  },
+
   security: {
     antiRaid: false,
     antiNuke: false,
@@ -78,6 +89,9 @@ const defaultServer = () => ({
     antiWebhook: false,
     antiBot: false,
     antiPermission: false,
+    antiMassRole: false,
+    antiChannelDelete: false,
+    antiMentionSpam: false,
     lockdown: false
   },
 
@@ -308,6 +322,23 @@ function addCase(guildId, entry) {
 // SLASH COMMANDS
 // ======================================
 
+const ALERT_TYPES = [
+  { name: "Phishing", value: "phishing" },
+  { name: "Menciones masivas", value: "mention" },
+  { name: "Mention spam", value: "mention-spam" },
+  { name: "Spam / Flood", value: "spam" },
+  { name: "AutoMod: palabras", value: "automod-word" },
+  { name: "AutoMod: enlaces", value: "automod-link" },
+  { name: "Anti-Bot", value: "anti-bot" },
+  { name: "Raid", value: "raid" },
+  { name: "Webhooks", value: "webhook" },
+  { name: "Anti-Nuke", value: "nuke" },
+  { name: "Permisos", value: "permission" },
+  { name: "Cambios masivos de roles", value: "mass-role" },
+  { name: "Eliminación de canales", value: "channel-delete" },
+  { name: "Reportes", value: "report" }
+];
+
 const commands = [
   new SlashCommandBuilder()
     .setName("help")
@@ -427,8 +458,8 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("modlogs")
-    .setDescription("Configurar canal de registros")
-    .addChannelOption(o => o.setName("canal").setDescription("Canal").setRequired(true)
+    .setDescription("Ver los registros recientes o configurar el canal de registros")
+    .addChannelOption(o => o.setName("canal").setDescription("Canal de registros (si lo omitís, se muestran los últimos registros)")
       .addChannelTypes(ChannelType.GuildText)),
 
   new SlashCommandBuilder()
@@ -453,7 +484,10 @@ const commands = [
           { name: "Anti-Phishing", value: "antiPhishing" },
           { name: "Anti-Webhook", value: "antiWebhook" },
           { name: "Anti-Bot", value: "antiBot" },
-          { name: "Anti-Permission", value: "antiPermission" }
+          { name: "Anti-Permission", value: "antiPermission" },
+          { name: "Anti-Mass-Role", value: "antiMassRole" },
+          { name: "Anti-Channel-Delete", value: "antiChannelDelete" },
+          { name: "Anti-Mention-Spam", value: "antiMentionSpam" }
         )))
     .addSubcommand(s => s.setName("disable")
       .setDescription("Desactivar una protección")
@@ -467,7 +501,10 @@ const commands = [
           { name: "Anti-Phishing", value: "antiPhishing" },
           { name: "Anti-Webhook", value: "antiWebhook" },
           { name: "Anti-Bot", value: "antiBot" },
-          { name: "Anti-Permission", value: "antiPermission" }
+          { name: "Anti-Permission", value: "antiPermission" },
+          { name: "Anti-Mass-Role", value: "antiMassRole" },
+          { name: "Anti-Channel-Delete", value: "antiChannelDelete" },
+          { name: "Anti-Mention-Spam", value: "antiMentionSpam" }
         ))),
 
   new SlashCommandBuilder()
@@ -476,7 +513,15 @@ const commands = [
     .addSubcommand(s => s.setName("scan").setDescription("Revisar permisos y configuración"))
     .addSubcommand(s => s.setName("logs").setDescription("Ver registros recientes"))
     .addSubcommand(s => s.setName("lockdown").setDescription("Activar bloqueo de emergencia"))
-    .addSubcommand(s => s.setName("unlockdown").setDescription("Desactivar bloqueo de emergencia")),
+    .addSubcommand(s => s.setName("unlockdown").setDescription("Desactivar bloqueo de emergencia"))
+    .addSubcommand(s => s.setName("alerts")
+      .setDescription("Ver las alertas de seguridad detalladas")
+      .addIntegerOption(o => o.setName("cantidad").setDescription("Cantidad (1 a 15, por defecto 10)").setMinValue(1).setMaxValue(15))
+      .addStringOption(o => o.setName("tipo").setDescription("Filtrar por tipo de alerta").addChoices(...ALERT_TYPES)))
+    .addSubcommand(s => s.setName("alerts-channel")
+      .setDescription("Elegir el canal de alertas de seguridad")
+      .addChannelOption(o => o.setName("canal").setDescription("Canal").setRequired(true)
+        .addChannelTypes(ChannelType.GuildText))),
 
   new SlashCommandBuilder()
     .setName("whitelist")
@@ -537,7 +582,123 @@ const commands = [
       .addChoices(
         { name: "Español", value: "es" },
         { name: "English", value: "en" }
+      )),
+
+  // ----- Comunicación -----
+
+  new SlashCommandBuilder()
+    .setName("say")
+    .setDescription("Enviar un mensaje como el bot")
+    .addStringOption(o => o.setName("texto").setDescription("Mensaje (usá \\n para saltos de línea)").setRequired(true).setMaxLength(2000))
+    .addChannelOption(o => o.setName("canal").setDescription("Canal de destino (por defecto, el actual)")
+      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+
+  new SlashCommandBuilder()
+    .setName("embed")
+    .setDescription("Crear y enviar un embed personalizado")
+    .addStringOption(o => o.setName("titulo").setDescription("Título").setRequired(true).setMaxLength(256))
+    .addStringOption(o => o.setName("descripcion").setDescription("Descripción (usá \\n para saltos de línea)").setRequired(true).setMaxLength(4000))
+    .addStringOption(o => o.setName("color").setDescription("Color en HEX, por ejemplo #1677FF"))
+    .addStringOption(o => o.setName("imagen").setDescription("Enlace https de una imagen"))
+    .addStringOption(o => o.setName("pie").setDescription("Texto al pie del embed").setMaxLength(200))
+    .addChannelOption(o => o.setName("canal").setDescription("Canal de destino (por defecto, el actual)")
+      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Publicar un anuncio en un canal")
+    .addStringOption(o => o.setName("mensaje").setDescription("Contenido (usá \\n para saltos de línea)").setRequired(true).setMaxLength(4000))
+    .addChannelOption(o => o.setName("canal").setDescription("Canal del anuncio").setRequired(true)
+      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+    .addStringOption(o => o.setName("titulo").setDescription("Título del anuncio").setMaxLength(200))
+    .addStringOption(o => o.setName("ping").setDescription("Mención al publicar")
+      .addChoices(
+        { name: "Sin mención", value: "none" },
+        { name: "@here", value: "here" },
+        { name: "@everyone", value: "everyone" }
+      )),
+
+  new SlashCommandBuilder()
+    .setName("poll")
+    .setDescription("Crear una encuesta con reacciones")
+    .addStringOption(o => o.setName("pregunta").setDescription("Pregunta").setRequired(true).setMaxLength(200))
+    .addStringOption(o => o.setName("opcion1").setDescription("Opción 1").setRequired(true).setMaxLength(100))
+    .addStringOption(o => o.setName("opcion2").setDescription("Opción 2").setRequired(true).setMaxLength(100))
+    .addStringOption(o => o.setName("opcion3").setDescription("Opción 3").setMaxLength(100))
+    .addStringOption(o => o.setName("opcion4").setDescription("Opción 4").setMaxLength(100))
+    .addStringOption(o => o.setName("opcion5").setDescription("Opción 5").setMaxLength(100))
+    .addChannelOption(o => o.setName("canal").setDescription("Canal de la encuesta (por defecto, el actual)")
+      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+
+  // ----- Moderación extra -----
+
+  new SlashCommandBuilder()
+    .setName("clear")
+    .setDescription("Limpiar mensajes del canal (opcionalmente de un usuario)")
+    .addIntegerOption(o => o.setName("cantidad").setDescription("Cantidad (1 a 100)").setRequired(true).setMinValue(1).setMaxValue(100))
+    .addUserOption(o => o.setName("usuario").setDescription("Borrar solo los mensajes de este usuario")),
+
+  new SlashCommandBuilder()
+    .setName("channelinfo")
+    .setDescription("Información de un canal")
+    .addChannelOption(o => o.setName("canal").setDescription("Canal (por defecto, el actual)")),
+
+  new SlashCommandBuilder()
+    .setName("report")
+    .setDescription("Reportar a un usuario al equipo de moderación")
+    .addUserOption(o => o.setName("usuario").setDescription("Usuario a reportar").setRequired(true))
+    .addStringOption(o => o.setName("motivo").setDescription("Motivo del reporte").setRequired(true).setMaxLength(500)),
+
+  new SlashCommandBuilder()
+    .setName("massrole")
+    .setDescription("Agregar o quitar un rol a muchos miembros (con confirmación)")
+    .addStringOption(o => o.setName("accion").setDescription("Acción").setRequired(true)
+      .addChoices(
+        { name: "Agregar", value: "add" },
+        { name: "Quitar", value: "remove" }
       ))
+    .addRoleOption(o => o.setName("rol").setDescription("Rol").setRequired(true))
+    .addStringOption(o => o.setName("objetivo").setDescription("A quiénes aplicarlo (por defecto, personas)")
+      .addChoices(
+        { name: "Personas (sin bots)", value: "humans" },
+        { name: "Bots", value: "bots" },
+        { name: "Todos", value: "all" }
+      )),
+
+  // ----- AutoMod -----
+
+  new SlashCommandBuilder()
+    .setName("automod")
+    .setDescription("Configurar los filtros de palabras y enlaces")
+    .addSubcommand(s => s.setName("status").setDescription("Ver la configuración del AutoMod"))
+    .addSubcommand(s => s.setName("toggle")
+      .setDescription("Activar o desactivar el AutoMod")
+      .addStringOption(o => o.setName("estado").setDescription("Estado").setRequired(true)
+        .addChoices(
+          { name: "Activar", value: "on" },
+          { name: "Desactivar", value: "off" }
+        )))
+    .addSubcommand(s => s.setName("word-add")
+      .setDescription("Agregar una palabra o frase bloqueada")
+      .addStringOption(o => o.setName("palabra").setDescription("Palabra o frase").setRequired(true).setMaxLength(50)))
+    .addSubcommand(s => s.setName("word-remove")
+      .setDescription("Quitar una palabra o frase bloqueada")
+      .addStringOption(o => o.setName("palabra").setDescription("Palabra o frase").setRequired(true).setMaxLength(50)))
+    .addSubcommand(s => s.setName("word-list").setDescription("Ver las palabras bloqueadas"))
+    .addSubcommand(s => s.setName("links")
+      .setDescription("Elegir cómo se filtran los enlaces")
+      .addStringOption(o => o.setName("modo").setDescription("Modo").setRequired(true)
+        .addChoices(
+          { name: "Desactivado", value: "off" },
+          { name: "Bloquear todos los enlaces", value: "block" },
+          { name: "Permitir solo dominios autorizados", value: "whitelist" }
+        )))
+    .addSubcommand(s => s.setName("domain-add")
+      .setDescription("Autorizar un dominio (por ejemplo youtube.com)")
+      .addStringOption(o => o.setName("dominio").setDescription("Dominio").setRequired(true).setMaxLength(100)))
+    .addSubcommand(s => s.setName("domain-remove")
+      .setDescription("Quitar un dominio autorizado")
+      .addStringOption(o => o.setName("dominio").setDescription("Dominio").setRequired(true).setMaxLength(100)))
 ];
 
 // ======================================
@@ -552,12 +713,12 @@ function helpEmbed() {
     .addFields(
       {
         name: "🛠️ Moderación",
-        value: "`/ban` `/unban` `/kick` `/timeout` `/untimeout`\n`/warn` `/unwarn` `/warnings` `/purge`\n`/slowmode` `/lock` `/unlock` `/role`\n`/nickname` `/history` `/note`",
+        value: "`/ban` `/unban` `/kick` `/timeout` `/untimeout`\n`/warn` `/unwarn` `/warnings` `/purge`\n`/slowmode` `/lock` `/unlock` `/role`\n`/nickname` `/history` `/note`\n`/clear` `/massrole` `/report`",
         inline: false
       },
       {
         name: "🛡️ Protección",
-        value: "`/anti status` `/anti enable` `/anti disable`\n`/security scan` `/security logs`\n`/security lockdown` `/security unlockdown`\n`/whitelist`",
+        value: "`/anti status` `/anti enable` `/anti disable`\n`/security scan` `/security logs` `/security alerts`\n`/security lockdown` `/security unlockdown`\n`/whitelist` `/automod`",
         inline: false
       },
       {
@@ -566,8 +727,13 @@ function helpEmbed() {
         inline: false
       },
       {
+        name: "📢 Comunicación",
+        value: "`/say` `/embed` `/announce` `/poll`",
+        inline: false
+      },
+      {
         name: "ℹ️ Información",
-        value: "`/ping` `/uptime` `/botinfo` `/serverinfo`\n`/userinfo` `/avatar` `/help`",
+        value: "`/ping` `/uptime` `/botinfo` `/serverinfo`\n`/userinfo` `/avatar` `/channelinfo` `/help`",
         inline: false
       }
     )
@@ -878,6 +1044,691 @@ async function reopenTicket(channel, user, config) {
 }
 
 // ======================================
+// ADMIN TOOLS, AUTOMOD AND SECURITY ALERTS
+// ======================================
+
+const wordRegexCache = new Map();
+const auditBuckets = new Map();
+const mentionHistory = new Map();
+const alertThrottle = new Map();
+const reportCooldown = new Map();
+const massRoleBusy = new Set();
+
+const MENTION_WINDOW_MS = 15000;
+const MENTION_LIMIT = 8;
+const MASSROLE_LIMIT = 250;
+
+// Permisos que un rol no puede tener para asignarse de forma masiva.
+const DANGEROUS_ROLE_PERMISSIONS = [
+  PermissionsBitField.Flags.Administrator,
+  PermissionsBitField.Flags.ManageGuild,
+  PermissionsBitField.Flags.ManageRoles,
+  PermissionsBitField.Flags.ManageChannels,
+  PermissionsBitField.Flags.ManageWebhooks,
+  PermissionsBitField.Flags.ManageMessages,
+  PermissionsBitField.Flags.ManageNicknames,
+  PermissionsBitField.Flags.KickMembers,
+  PermissionsBitField.Flags.BanMembers,
+  PermissionsBitField.Flags.ModerateMembers,
+  PermissionsBitField.Flags.MentionEveryone
+];
+
+const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>()]+|\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|gg|me|co|xyz|info|ru|tk|ml|ga|cf|gq|app|dev|link|click|top|site|online|shop|live|ly|to|tv|us|ar|es|mx|uk|de|fr|br|cl|cc|ws|biz|club|fun|vip)\b(?:\/[^\s<>()]*)?/gi;
+
+// ---------- Utilidades ----------
+
+function normalizeText(text) {
+  return String(text)
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[​-‍﻿]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function wordRegex(word) {
+  let regex = wordRegexCache.get(word);
+
+  if (!regex) {
+    regex = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(word)}(?![\\p{L}\\p{N}])`, "u");
+    wordRegexCache.set(word, regex);
+  }
+
+  return regex;
+}
+
+function extractHosts(content) {
+  const hosts = new Set();
+
+  for (const raw of String(content).match(URL_PATTERN) || []) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+      hosts.add(url.hostname.toLowerCase().replace(/^www\./, ""));
+    } catch {
+      // Texto que parecía un enlace pero no lo es.
+    }
+  }
+
+  return [...hosts];
+}
+
+function normalizeDomain(input) {
+  const domain = String(input).toLowerCase().trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split(/[/?#]/)[0];
+
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain) ? domain : null;
+}
+
+function parseEscapes(text) {
+  return String(text).replace(/\\n/g, "\n");
+}
+
+function parseColor(input) {
+  const match = /^#?([0-9a-f]{6})$/i.exec(String(input).trim());
+  return match ? parseInt(match[1], 16) : null;
+}
+
+function safeHttpsUrl(input) {
+  try {
+    const url = new URL(String(input).trim());
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function bucketCount(key, windowMs) {
+  const now = Date.now();
+  const list = (auditBuckets.get(key) || []).filter(time => now - time < windowMs);
+
+  list.push(now);
+  auditBuckets.set(key, list);
+
+  return list.length;
+}
+
+function throttled(key, ms) {
+  const now = Date.now();
+
+  if (now - (alertThrottle.get(key) || 0) < ms) return true;
+
+  alertThrottle.set(key, now);
+  return false;
+}
+
+async function trySend(channel, payload) {
+  try {
+    return await channel.send(payload);
+  } catch (error) {
+    console.error("Error enviando mensaje:", error);
+    return null;
+  }
+}
+
+function resolveChannel(interaction) {
+  const picked = interaction.options.getChannel("canal");
+
+  return picked
+    ? interaction.guild.channels.cache.get(picked.id)
+    : interaction.channel;
+}
+
+async function validateSendChannel(interaction, actor, channel) {
+  const flags = PermissionsBitField.Flags;
+
+  if (!channel?.isTextBased() || !channel.permissionsFor) {
+    await reply(interaction, "Elegí un canal de texto válido.", 0xE74C3C);
+    return false;
+  }
+
+  if (!channel.permissionsFor(actor)?.has([flags.ViewChannel, flags.SendMessages])) {
+    await reply(interaction, "Vos no podés escribir en ese canal.", 0xE74C3C);
+    return false;
+  }
+
+  if (!await botHas(interaction.guild, [flags.ViewChannel, flags.SendMessages], channel)) {
+    await reply(interaction, "No puedo escribir en ese canal. Revisá mis permisos.", 0xE74C3C);
+    return false;
+  }
+
+  return true;
+}
+
+// ---------- Alertas de seguridad (Security Logs) ----------
+
+async function securityAlert(guild, type, title, description, userId = null) {
+  try {
+    const config = getServer(guild.id);
+
+    config.securityLogs.push({
+      id: Date.now(),
+      type,
+      title,
+      description: String(description).slice(0, 500),
+      userId,
+      date: new Date().toISOString()
+    });
+
+    if (config.securityLogs.length > 200) {
+      config.securityLogs.shift();
+    }
+
+    saveData();
+
+    const channelId = config.securityChannel || config.logs;
+    if (!channelId) return;
+
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel?.isTextBased()) return;
+
+    await channel.send({
+      embeds: [makeEmbed(title, description, 0xE74C3C)]
+    });
+  } catch (error) {
+    console.error("Error registrando alerta de seguridad:", error);
+  }
+}
+
+// ---------- AutoMod ----------
+
+async function runAutoMod(message, config) {
+  const automod = config.automod;
+  if (!automod.enabled || !message.content) return false;
+
+  const guild = message.guild;
+  const author = message.author;
+  const where = `Usuario: <@${author.id}>\nCanal: <#${message.channel.id}>`;
+  const text = normalizeText(message.content);
+
+  const badWord = automod.words.find(word => wordRegex(word).test(text));
+
+  if (badWord) {
+    await message.delete().catch(() => {});
+    await securityAlert(guild, "automod-word", "AutoMod: palabra bloqueada",
+      `${where}\nFiltro activado: ||${badWord}||`, author.id);
+    return true;
+  }
+
+  if (automod.linkMode !== "off") {
+    const blocked = extractHosts(message.content).filter(host =>
+      automod.linkMode === "block" ||
+      !automod.allowedDomains.some(domain => host === domain || host.endsWith(`.${domain}`))
+    );
+
+    if (blocked.length) {
+      await message.delete().catch(() => {});
+      await securityAlert(guild, "automod-link", "AutoMod: enlace bloqueado",
+        `${where}\nDominios: ${blocked.slice(0, 5).map(host => `\`${host}\``).join(", ")}`, author.id);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ---------- Comandos de administración nuevos ----------
+
+async function adminTools(interaction, name, actor, config) {
+  const guild = interaction.guild;
+  const user = interaction.user;
+  const options = interaction.options;
+  const flags = PermissionsBitField.Flags;
+
+  // /say
+  if (name === "say") {
+    const channel = resolveChannel(interaction);
+    const text = parseEscapes(options.getString("texto"));
+
+    if (!await validateSendChannel(interaction, actor, channel)) return;
+
+    const sent = await trySend(channel, {
+      content: text,
+      allowedMentions: { parse: [] }
+    });
+
+    if (!sent) return reply(interaction, "No pude enviar el mensaje.", 0xE74C3C);
+
+    await log(guild, "Comando /say",
+      `Usuario: <@${user.id}>\nCanal: <#${channel.id}>\nTexto: ${text.slice(0, 500)}`);
+
+    return reply(interaction, `Mensaje enviado en <#${channel.id}>.`);
+  }
+
+  // /embed
+  if (name === "embed") {
+    const channel = resolveChannel(interaction);
+    const colorInput = options.getString("color");
+    const imageInput = options.getString("imagen");
+    const footer = options.getString("pie");
+
+    let color = 0x1677FF;
+
+    if (colorInput) {
+      const parsed = parseColor(colorInput);
+      if (parsed === null) {
+        return reply(interaction, "El color debe ser HEX, por ejemplo `#1677FF`.", 0xE74C3C);
+      }
+      color = parsed;
+    }
+
+    let imageUrl = null;
+
+    if (imageInput) {
+      imageUrl = safeHttpsUrl(imageInput);
+      if (!imageUrl) {
+        return reply(interaction, "La imagen debe ser un enlace `https://` válido.", 0xE74C3C);
+      }
+    }
+
+    if (!await validateSendChannel(interaction, actor, channel)) return;
+
+    const embed = new EmbedBuilder()
+      .setColor(color)
+      .setTitle(options.getString("titulo"))
+      .setDescription(parseEscapes(options.getString("descripcion")));
+
+    if (imageUrl) embed.setImage(imageUrl);
+    if (footer) embed.setFooter({ text: footer });
+
+    const sent = await trySend(channel, {
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    });
+
+    if (!sent) return reply(interaction, "No pude enviar el embed. Revisá los datos y mis permisos.", 0xE74C3C);
+
+    await log(guild, "Comando /embed",
+      `Usuario: <@${user.id}>\nCanal: <#${channel.id}>\nTítulo: ${options.getString("titulo").slice(0, 200)}`);
+
+    return reply(interaction, `Embed enviado en <#${channel.id}>.`);
+  }
+
+  // /announce
+  if (name === "announce") {
+    const channel = resolveChannel(interaction);
+    const ping = options.getString("ping") || "none";
+
+    if (ping === "everyone" && !hasPermission(actor, flags.MentionEveryone)) {
+      return reply(interaction, "Necesitás el permiso **Mention Everyone** para usar @everyone.", 0xE74C3C);
+    }
+
+    if (!await validateSendChannel(interaction, actor, channel)) return;
+
+    const embed = new EmbedBuilder()
+      .setColor(0xF1C40F)
+      .setTitle(`📢 ${options.getString("titulo") || "Anuncio"}`)
+      .setDescription(parseEscapes(options.getString("mensaje")))
+      .setFooter({ text: `Publicado por ${actor.displayName}` })
+      .setTimestamp();
+
+    const sent = await trySend(channel, {
+      content: ping === "everyone" ? "@everyone" : ping === "here" ? "@here" : undefined,
+      embeds: [embed],
+      allowedMentions: { parse: ping === "none" ? [] : ["everyone"] }
+    });
+
+    if (!sent) return reply(interaction, "No pude publicar el anuncio.", 0xE74C3C);
+
+    await log(guild, "Comando /announce",
+      `Usuario: <@${user.id}>\nCanal: <#${channel.id}>\nMención: ${ping}`);
+
+    return reply(interaction, `Anuncio publicado en <#${channel.id}>.`);
+  }
+
+  // /poll
+  if (name === "poll") {
+    const channel = resolveChannel(interaction);
+    const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+
+    const choices = [1, 2, 3, 4, 5]
+      .map(number => options.getString(`opcion${number}`))
+      .filter(Boolean);
+
+    if (!await validateSendChannel(interaction, actor, channel)) return;
+
+    if (!await botHas(guild, [flags.AddReactions, flags.ReadMessageHistory], channel)) {
+      return reply(interaction, "Me faltan los permisos **Add Reactions** y **Read Message History** en ese canal.", 0xE74C3C);
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x1677FF)
+      .setTitle(`📊 ${options.getString("pregunta")}`)
+      .setDescription(choices.map((choice, index) => `${emojis[index]} ${choice}`).join("\n\n"))
+      .setFooter({ text: `Encuesta creada por ${actor.displayName}` })
+      .setTimestamp();
+
+    const sent = await trySend(channel, {
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    });
+
+    if (!sent) return reply(interaction, "No pude crear la encuesta.", 0xE74C3C);
+
+    for (let index = 0; index < choices.length; index++) {
+      await sent.react(emojis[index]).catch(() => {});
+    }
+
+    return reply(interaction, `Encuesta creada en <#${channel.id}>.`);
+  }
+
+  // /clear
+  if (name === "clear") {
+    const channel = interaction.channel;
+    const amount = options.getInteger("cantidad");
+    const filterUser = options.getUser("usuario");
+
+    if (!await requireBotPermission(interaction, flags.ManageMessages, channel)) return;
+
+    try {
+      const fetched = await channel.messages.fetch({ limit: filterUser ? 100 : amount });
+
+      const toDelete = fetched
+        .filter(message => !message.pinned && (!filterUser || message.author.id === filterUser.id))
+        .first(amount);
+
+      const deleted = await channel.bulkDelete(toDelete, true);
+
+      await log(guild, "Mensajes eliminados",
+        `Moderador: <@${user.id}>\nCanal: <#${channel.id}>\nCantidad: ${deleted.size}${filterUser ? `\nUsuario: <@${filterUser.id}>` : ""}`);
+
+      return reply(interaction,
+        `Eliminé **${deleted.size}** mensajes${filterUser ? ` de <@${filterUser.id}> (se revisan los últimos 100)` : ""}. Discord solo permite borrar en bloque mensajes de menos de 14 días; los fijados se conservan.`);
+    } catch (error) {
+      console.error("Error en /clear:", error);
+      return reply(interaction, "No pude eliminar los mensajes.", 0xE74C3C);
+    }
+  }
+
+  // /channelinfo
+  if (name === "channelinfo") {
+    const channel = resolveChannel(interaction);
+
+    if (!channel || !channel.permissionsFor(actor)?.has(flags.ViewChannel)) {
+      return reply(interaction, "No podés ver ese canal.", 0xE74C3C);
+    }
+
+    const lines = [
+      `**Nombre:** ${channel.name}`,
+      `**ID:** ${channel.id}`,
+      `**Tipo:** ${ChannelType[channel.type] || channel.type}`,
+      `**Categoría:** ${channel.parent ? channel.parent.name : "Ninguna"}`,
+      `**Creado:** <t:${Math.floor(channel.createdTimestamp / 1000)}:F>`
+    ];
+
+    if (channel.topic) lines.push(`**Tema:** ${channel.topic.slice(0, 200)}`);
+    if (typeof channel.nsfw === "boolean") lines.push(`**NSFW:** ${channel.nsfw ? "Sí" : "No"}`);
+    if (typeof channel.rateLimitPerUser === "number") lines.push(`**Slowmode:** ${channel.rateLimitPerUser} s`);
+    if (typeof channel.position === "number") lines.push(`**Posición:** ${channel.position}`);
+
+    if (channel.isVoiceBased?.()) {
+      lines.push(`**Límite de usuarios:** ${channel.userLimit || "Sin límite"}`);
+      lines.push(`**Bitrate:** ${Math.round(channel.bitrate / 1000)} kbps`);
+    }
+
+    return reply(interaction, lines.join("\n"));
+  }
+
+  // /report
+  if (name === "report") {
+    const target = options.getUser("usuario");
+    const reportReason = options.getString("motivo");
+
+    if (target.id === user.id) {
+      return reply(interaction, "No podés reportarte a vos mismo.", 0xE74C3C);
+    }
+
+    const cooldownKey = `${guild.id}:${user.id}`;
+
+    if (Date.now() - (reportCooldown.get(cooldownKey) || 0) < 60000) {
+      return reply(interaction, "Esperá un minuto antes de enviar otro reporte.", 0xE74C3C);
+    }
+
+    reportCooldown.set(cooldownKey, Date.now());
+
+    config.reports.push({
+      id: Date.now(),
+      reporter: user.id,
+      user: target.id,
+      reason: reportReason,
+      channel: interaction.channel.id,
+      date: new Date().toISOString()
+    });
+
+    if (config.reports.length > 200) config.reports.shift();
+    saveData();
+
+    await securityAlert(guild, "report", "Nuevo reporte de usuario",
+      `Reportado: <@${target.id}>\nReportado por: <@${user.id}>\nCanal: <#${interaction.channel.id}>\nMotivo: ${reportReason}`,
+      target.id);
+
+    return reply(interaction, config.securityChannel || config.logs
+      ? "Tu reporte fue enviado al equipo de moderación. ¡Gracias!"
+      : "Tu reporte quedó guardado, pero el servidor todavía no configuró un canal de alertas. Avisá a un moderador.");
+  }
+
+  // /massrole
+  if (name === "massrole") {
+    const action = options.getString("accion");
+    const scope = options.getString("objetivo") || "humans";
+    const pickedRole = options.getRole("rol");
+    const role = guild.roles.cache.get(pickedRole.id);
+    const botMember = await getBotMember(guild);
+
+    if (!role || !botMember) return reply(interaction, "No pude verificar el rol.", 0xE74C3C);
+
+    if (!await requireBotPermission(interaction, flags.ManageRoles)) return;
+
+    if (role.id === guild.id || role.managed) {
+      return reply(interaction, "Ese rol no se puede asignar manualmente.", 0xE74C3C);
+    }
+
+    if (role.position >= botMember.roles.highest.position) {
+      return reply(interaction, "Mi rol está por debajo de ese rol.", 0xE74C3C);
+    }
+
+    if (actor.id !== guild.ownerId && role.position >= actor.roles.highest.position) {
+      return reply(interaction, "No podés administrar un rol igual o superior al tuyo.", 0xE74C3C);
+    }
+
+    if (role.permissions.any(DANGEROUS_ROLE_PERMISSIONS)) {
+      return reply(interaction, "Por seguridad, no se asignan de forma masiva roles con permisos de administración o moderación.", 0xE74C3C);
+    }
+
+    if (massRoleBusy.has(guild.id)) {
+      return reply(interaction, "Ya hay una operación masiva en curso en este servidor.", 0xE74C3C);
+    }
+
+    const members = await guild.members.fetch();
+    const eligible = [];
+    let skipped = 0;
+
+    for (const member of members.values()) {
+      if (scope === "humans" && member.user.bot) continue;
+      if (scope === "bots" && !member.user.bot) continue;
+
+      const hasRole = member.roles.cache.has(role.id);
+      if (action === "add" ? hasRole : !hasRole) continue;
+
+      if (!canManageTarget(actor, member) || !canManageTarget(botMember, member)) {
+        skipped++;
+        continue;
+      }
+
+      eligible.push(member);
+    }
+
+    if (!eligible.length) {
+      return reply(interaction, "No hay miembros a los que aplicar ese cambio.");
+    }
+
+    if (eligible.length > MASSROLE_LIMIT) {
+      return reply(interaction,
+        `Son **${eligible.length}** miembros y el máximo por operación es **${MASSROLE_LIMIT}**. Probá con otro objetivo o dividilo en varias tandas.`,
+        0xE74C3C);
+    }
+
+    const verb = action === "add" ? "agregar" : "quitar";
+    const scopeLabel = { humans: "personas", bots: "bots", all: "todos" }[scope];
+
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("sentinel_massrole_confirm")
+        .setLabel("Confirmar")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId("sentinel_massrole_cancel")
+        .setLabel("Cancelar")
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    const prompt = await interaction.editReply({
+      embeds: [makeEmbed("Confirmar acción masiva",
+        `Vas a **${verb}** el rol ${role} a **${eligible.length}** miembros (${scopeLabel}).${skipped ? `\nSe omiten ${skipped} por jerarquía.` : ""}\n\nTenés 30 segundos para confirmar.`,
+        0xF39C12)],
+      components: [buttons]
+    });
+
+    let choice;
+
+    try {
+      choice = await prompt.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        filter: i => i.user.id === user.id && i.customId.startsWith("sentinel_massrole_"),
+        time: 30000
+      });
+    } catch {
+      return interaction.editReply({
+        embeds: [makeEmbed("Acción masiva", "Se agotó el tiempo. No se hizo ningún cambio.")],
+        components: []
+      });
+    }
+
+    if (choice.customId === "sentinel_massrole_cancel") {
+      return choice.update({
+        embeds: [makeEmbed("Acción masiva", "Cancelado. No se hizo ningún cambio.")],
+        components: []
+      });
+    }
+
+    await choice.update({
+      embeds: [makeEmbed("Acción masiva en curso", `Procesando **${eligible.length}** miembros. Puede tardar unos minutos.`)],
+      components: []
+    });
+
+    massRoleBusy.add(guild.id);
+
+    let done = 0;
+    let failed = 0;
+
+    try {
+      for (const member of eligible) {
+        const auditReason = `Massrole por ${user.tag}`;
+
+        const ok = await (action === "add"
+          ? member.roles.add(role, auditReason)
+          : member.roles.remove(role, auditReason))
+          .then(() => true)
+          .catch(() => false);
+
+        if (ok) done++;
+        else failed++;
+      }
+    } finally {
+      massRoleBusy.delete(guild.id);
+    }
+
+    await log(guild, "Acción masiva de roles",
+      `Moderador: <@${user.id}>\nAcción: ${verb} ${role}\nObjetivo: ${scopeLabel}\nResultado: ${done} correctos, ${failed} fallidos.`);
+
+    return interaction.editReply({
+      embeds: [makeEmbed("Acción masiva completada", `Correctos: **${done}**\nFallidos: **${failed}**`)],
+      components: []
+    });
+  }
+
+  // /automod
+  if (name === "automod") {
+    const sub = options.getSubcommand();
+    const automod = config.automod;
+
+    if (sub === "status") {
+      const modes = {
+        off: "Desactivado",
+        block: "Bloquear todos los enlaces",
+        whitelist: "Solo dominios autorizados"
+      };
+
+      return reply(interaction,
+        `**Estado:** ${automod.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n**Palabras bloqueadas:** ${automod.words.length}\n**Enlaces:** ${modes[automod.linkMode] || automod.linkMode}\n**Dominios autorizados:** ${automod.allowedDomains.length ? automod.allowedDomains.join(", ") : "Ninguno"}`);
+    }
+
+    if (sub === "toggle") {
+      automod.enabled = options.getString("estado") === "on";
+      saveData();
+      return reply(interaction, `AutoMod ${automod.enabled ? "activado" : "desactivado"}.`);
+    }
+
+    if (sub === "word-add") {
+      const word = normalizeText(options.getString("palabra"));
+
+      if (word.length < 2) return reply(interaction, "La palabra es demasiado corta.", 0xE74C3C);
+      if (automod.words.length >= 200) return reply(interaction, "Llegaste al límite de 200 palabras.", 0xE74C3C);
+      if (automod.words.includes(word)) return reply(interaction, "Esa palabra ya está en la lista.");
+
+      automod.words.push(word);
+      saveData();
+      return reply(interaction, "Palabra agregada al filtro.");
+    }
+
+    if (sub === "word-remove") {
+      const word = normalizeText(options.getString("palabra"));
+
+      if (!automod.words.includes(word)) return reply(interaction, "Esa palabra no está en la lista.");
+
+      automod.words = automod.words.filter(item => item !== word);
+      saveData();
+      return reply(interaction, "Palabra eliminada del filtro.");
+    }
+
+    if (sub === "word-list") {
+      return reply(interaction, automod.words.length
+        ? automod.words.map(word => `\`${word}\``).join(", ").slice(0, 3800)
+        : "No hay palabras bloqueadas.");
+    }
+
+    if (sub === "links") {
+      automod.linkMode = options.getString("modo");
+      saveData();
+      return reply(interaction, `Modo de enlaces: **${automod.linkMode}**.`);
+    }
+
+    if (sub === "domain-add" || sub === "domain-remove") {
+      const domain = normalizeDomain(options.getString("dominio"));
+
+      if (!domain) return reply(interaction, "Ese dominio no es válido. Ejemplo: `youtube.com`.", 0xE74C3C);
+
+      if (sub === "domain-add") {
+        if (automod.allowedDomains.length >= 100) return reply(interaction, "Llegaste al límite de 100 dominios.", 0xE74C3C);
+        if (!automod.allowedDomains.includes(domain)) automod.allowedDomains.push(domain);
+      } else {
+        automod.allowedDomains = automod.allowedDomains.filter(item => item !== domain);
+      }
+
+      saveData();
+      return reply(interaction, sub === "domain-add"
+        ? `Dominio autorizado: \`${domain}\`.`
+        : `Dominio eliminado: \`${domain}\`.`);
+    }
+  }
+}
+
+// ======================================
 // SLASH HANDLER
 // ======================================
 
@@ -918,6 +1769,13 @@ async function slashCommand(interaction) {
     "ticket-add": PermissionsBitField.Flags.ManageChannels,
     "ticket-remove": PermissionsBitField.Flags.ManageChannels,
     "ticket-reopen": PermissionsBitField.Flags.ManageChannels,
+    say: PermissionsBitField.Flags.ManageGuild,
+    embed: PermissionsBitField.Flags.ManageGuild,
+    announce: PermissionsBitField.Flags.ManageGuild,
+    poll: PermissionsBitField.Flags.ManageMessages,
+    clear: PermissionsBitField.Flags.ManageMessages,
+    massrole: PermissionsBitField.Flags.ManageRoles,
+    automod: PermissionsBitField.Flags.ManageGuild,
     language: PermissionsBitField.Flags.ManageGuild
   };
 
@@ -1149,7 +2007,17 @@ async function slashCommand(interaction) {
   }
 
   if (name === "modlogs") {
-    config.logs = interaction.options.getChannel("canal").id;
+    const selected = interaction.options.getChannel("canal");
+
+    if (!selected) {
+      const recent = config.cases.slice(-10).reverse();
+
+      return reply(interaction, recent.length
+        ? recent.map(c => `**${c.action}** — <@${c.user}> — ${c.reason || "Sin motivo"} — <t:${Math.floor(new Date(c.date).getTime() / 1000)}:R>`).join("\n")
+        : "Todavía no hay registros de moderación.");
+    }
+
+    config.logs = selected.id;
     saveData();
     return reply(interaction, "Canal de registros configurado.");
   }
@@ -1190,6 +2058,28 @@ async function slashCommand(interaction) {
 
     if (sub === "lockdown" || sub === "unlockdown") {
       return setLockdown(guild, sub === "lockdown", interaction);
+    }
+
+    if (sub === "alerts") {
+      const amount = interaction.options.getInteger("cantidad") || 10;
+      const type = interaction.options.getString("tipo");
+
+      const alerts = config.securityLogs
+        .filter(alert => !type || alert.type === type)
+        .slice(-amount)
+        .reverse();
+
+      return reply(interaction, alerts.length
+        ? alerts.map(alert =>
+            `**${alert.title}** — <t:${Math.floor(new Date(alert.date).getTime() / 1000)}:R>\n${String(alert.description).replace(/\n/g, " · ").slice(0, 180)}`
+          ).join("\n\n").slice(0, 4000)
+        : "No hay alertas de seguridad registradas.");
+    }
+
+    if (sub === "alerts-channel") {
+      config.securityChannel = interaction.options.getChannel("canal").id;
+      saveData();
+      return reply(interaction, "Canal de alertas de seguridad configurado.");
     }
 
     if (sub === "logs") {
@@ -1262,6 +2152,12 @@ async function slashCommand(interaction) {
     config.language = interaction.options.getString("idioma");
     saveData();
     return reply(interaction, `Idioma configurado: ${config.language}`);
+  }
+
+  // NEW ADMIN TOOLS
+
+  if (["say", "embed", "announce", "poll", "clear", "channelinfo", "report", "massrole", "automod"].includes(name)) {
+    return adminTools(interaction, name, actor, config);
   }
 
   // TICKETS
@@ -1390,6 +2286,7 @@ async function prefixCommand(message) {
     "ticket-reopen": PermissionsBitField.Flags.ManageChannels,
     "ticket-add": PermissionsBitField.Flags.ManageChannels,
     "ticket-remove": PermissionsBitField.Flags.ManageChannels,
+    clear: PermissionsBitField.Flags.ManageMessages,
     language: PermissionsBitField.Flags.ManageGuild
   };
 
@@ -1492,7 +2389,7 @@ async function prefixCommand(message) {
     return reply(message, "Advertencia eliminada.");
   }
 
-  if (command === "purge") {
+  if (command === "purge" || command === "clear") {
     if (!await requireBotPermission(message, PermissionsBitField.Flags.ManageMessages, message.channel)) return;
     const amount = Number(args[0]);
 
@@ -1706,69 +2603,115 @@ const phishingPatterns = [
   /verify[\W_]*account/i
 ];
 
+async function messageProtections(message, isEdit = false) {
+  const guild = message.guild;
+  const config = getServer(guild.id);
+
+  if (isWhitelisted(guild.id, message.author.id)) return false;
+
+  const member = message.member ||
+    await guild.members.fetch(message.author.id).catch(() => null);
+
+  if (member?.permissions.has(PermissionsBitField.Flags.ManageMessages)) return false;
+
+  const key = `${guild.id}:${message.author.id}`;
+  const now = Date.now();
+  const content = message.content || "";
+  const where = `Usuario: <@${message.author.id}>\nCanal: <#${message.channel.id}>`;
+
+  // Anti-phishing: heurística básica, puede generar falsos positivos.
+  if (config.security.antiPhishing &&
+      phishingPatterns.some(pattern => pattern.test(content))) {
+    await message.delete().catch(() => {});
+    await securityAlert(guild, "phishing", "Posible phishing",
+      `Mensaje sospechoso.\n${where}`, message.author.id);
+    return true;
+  }
+
+  // Anti mass mention (un solo mensaje).
+  if (config.security.antiMentions &&
+      (message.mentions.users.size >= 5 || message.mentions.everyone)) {
+    await message.delete().catch(() => {});
+    await securityAlert(guild, "mention", "Anti-Mass-Mention",
+      `Menciones masivas.\n${where}`, message.author.id);
+    return true;
+  }
+
+  // Anti-Mention-Spam: muchas menciones acumuladas en poco tiempo.
+  if (!isEdit && config.security.antiMentionSpam) {
+    const mentioned = message.mentions.users.size + message.mentions.roles.size;
+
+    if (mentioned > 0) {
+      const history = mentionHistory.get(key) || [];
+      history.push({ time: now, count: mentioned });
+
+      const recent = history.filter(item => now - item.time < MENTION_WINDOW_MS);
+      mentionHistory.set(key, recent);
+
+      const total = recent.reduce((sum, item) => sum + item.count, 0);
+
+      if (total >= MENTION_LIMIT) {
+        mentionHistory.delete(key);
+        await message.delete().catch(() => {});
+
+        let timedOut = false;
+
+        if (member?.moderatable) {
+          timedOut = await member.timeout(5 * 60 * 1000, "Anti-Mention-Spam")
+            .then(() => true)
+            .catch(() => false);
+        }
+
+        await securityAlert(guild, "mention-spam", "Anti-Mention-Spam",
+          `${total} menciones en ${MENTION_WINDOW_MS / 1000} segundos.\n${where}\nTimeout de 5 minutos: ${timedOut ? "aplicado" : "no aplicado"}.`,
+          message.author.id);
+        return true;
+      }
+    }
+  }
+
+  // AutoMod: palabras y enlaces configurables.
+  if (await runAutoMod(message, config)) return true;
+
+  // Anti-spam / anti-flood.
+  if (!isEdit && (config.security.antiSpam || config.security.antiFlood)) {
+    const history = recentMessages.get(key) || [];
+    history.push({ content, time: now });
+
+    const recent = history.filter(item => now - item.time < 7000);
+    recentMessages.set(key, recent);
+
+    const repeated = recent.filter(item => item.content === content).length >= 4;
+    const flooding = recent.length >= 7;
+
+    if ((config.security.antiSpam && repeated) ||
+        (config.security.antiFlood && flooding)) {
+      await message.delete().catch(() => {});
+
+      if (!throttled(`spam:${key}`, 30000)) {
+        await securityAlert(guild, "spam", "Anti-Spam / Anti-Flood",
+          `Actividad repetitiva.\n${where}`, message.author.id);
+      }
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
 client.on("messageCreate", async message => {
   try {
     if (!message.guild || message.author.bot) return;
 
+    // Primero las protecciones: así nadie se las salta empezando el mensaje con ".".
+    if (await messageProtections(message)) return;
+
     if (message.content.startsWith(PREFIX)) {
       await prefixCommand(message);
-      return;
-    }
-
-    const config = getServer(message.guild.id);
-    const member = message.member;
-
-    if (isWhitelisted(message.guild.id, message.author.id)) return;
-    if (member.permissions.has(PermissionsBitField.Flags.ManageMessages)) return;
-
-    const key = `${message.guild.id}:${message.author.id}`;
-    const currentTime = Date.now();
-
-    // Anti-phishing: heurística básica, puede generar falsos positivos.
-    if (config.security.antiPhishing &&
-        phishingPatterns.some(pattern => pattern.test(message.content))) {
-      await message.delete().catch(() => {});
-      await log(message.guild, "Posible phishing",
-        `Mensaje sospechoso de <@${message.author.id}> en <#${message.channel.id}>.`,
-        0xE74C3C);
-      return;
-    }
-
-    // Anti mass mention.
-    if (config.security.antiMentions &&
-        (message.mentions.users.size >= 5 || message.mentions.everyone)) {
-      await message.delete().catch(() => {});
-      await log(message.guild, "Anti-Mass-Mention",
-        `<@${message.author.id}> envió menciones masivas en <#${message.channel.id}>.`,
-        0xE74C3C);
-      return;
-    }
-
-    // Anti-spam / anti-flood.
-    if (config.security.antiSpam || config.security.antiFlood) {
-      const history = recentMessages.get(key) || [];
-      history.push({
-        content: message.content,
-        time: currentTime
-      });
-
-      const recent = history.filter(item => currentTime - item.time < 7000);
-      recentMessages.set(key, recent);
-
-      const repeated = recent.filter(item => item.content === message.content).length >= 4;
-      const flooding = recent.length >= 7;
-
-      if ((config.security.antiSpam && repeated) ||
-          (config.security.antiFlood && flooding)) {
-        await message.delete().catch(() => {});
-
-        await log(message.guild, "Anti-Spam / Anti-Flood",
-          `Se detectó actividad repetitiva de <@${message.author.id}> en <#${message.channel.id}>.`,
-          0xE74C3C);
-      }
     }
   } catch (error) {
-    console.error("Error en protecciones de mensajes:", error);
+    console.error("Error en messageCreate:", error);
   }
 });
 
@@ -1790,8 +2733,15 @@ client.on("messageDelete", async message => {
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
   try {
-    if (!newMessage.guild || newMessage.author?.bot) return;
+    if (newMessage.partial) {
+      newMessage = await newMessage.fetch().catch(() => null);
+    }
+
+    if (!newMessage?.guild || !newMessage.author || newMessage.author.bot) return;
     if (oldMessage.content === newMessage.content) return;
+
+    // Las ediciones también pasan por las protecciones para que no se evadan editando.
+    if (await messageProtections(newMessage, true)) return;
 
     await log(newMessage.guild, "Mensaje editado",
       `Autor: <@${newMessage.author.id}>\nCanal: <#${newMessage.channel.id}>\nAntes: ${(oldMessage.content || "No disponible").slice(0, 600)}\nDespués: ${(newMessage.content || "No disponible").slice(0, 600)}`);
@@ -1837,9 +2787,8 @@ client.on("guildMemberAdd", async member => {
         await member.kick("Bot no autorizado: Sentinel Security").catch(() => {});
       }
 
-      await log(member.guild, "Anti-Bot",
-        `Se detectó un bot no autorizado: ${member.user.tag}.`,
-        0xE74C3C);
+      await securityAlert(member.guild, "anti-bot", "Anti-Bot",
+        `Se detectó un bot no autorizado: ${member.user.tag}.`, member.id);
       return;
     }
 
@@ -1851,9 +2800,8 @@ client.on("guildMemberAdd", async member => {
       joinHistory.set(member.guild.id, recent);
 
       if (recent.length === 8) {
-        await log(member.guild, "Posible Raid",
-          `${recent.length} usuarios entraron en 10 segundos. Revisá el servidor.`,
-          0xE74C3C);
+        await securityAlert(member.guild, "raid", "Posible Raid",
+          `${recent.length} usuarios entraron en 10 segundos. Revisá el servidor.`);
       }
     }
 
@@ -1896,9 +2844,8 @@ client.on("webhookUpdate", async channel => {
     const config = getServer(channel.guild.id);
     if (!config.security.antiWebhook) return;
 
-    await log(channel.guild, "Cambio de webhook",
-      `Se detectó un cambio en los webhooks de <#${channel.id}>. Revisá los registros de auditoría.`,
-      0xE74C3C);
+    await securityAlert(channel.guild, "webhook", "Cambio de webhook",
+      `Se detectó un cambio en los webhooks de <#${channel.id}>. Revisá los registros de auditoría.`);
   } catch (error) {
     console.error("Error en webhookUpdate:", error);
   }
@@ -1921,7 +2868,8 @@ client.on("guildAuditLogEntryCreate", async (entry, guild) => {
     const config = getServer(guild.id);
     const executorId = entry.executorId;
 
-    if (!executorId || isWhitelisted(guild.id, executorId)) return;
+    // Se ignoran las acciones del propio bot (tickets, /massrole...) y de usuarios de confianza.
+    if (!executorId || executorId === client.user.id || isWhitelisted(guild.id, executorId)) return;
 
     const isDestructive = [
       AuditLogEvent.ChannelDelete,
@@ -1938,21 +2886,72 @@ client.on("guildAuditLogEntryCreate", async (entry, guild) => {
       AuditLogEvent.ChannelCreate
     ].includes(entry.action);
 
+    const isRoleChange = [
+      AuditLogEvent.RoleCreate,
+      AuditLogEvent.RoleUpdate,
+      AuditLogEvent.RoleDelete,
+      AuditLogEvent.MemberRoleUpdate
+    ].includes(entry.action);
+
     if (config.security.antiNuke && isDestructive) {
-      await log(guild, "Alerta Anti-Nuke",
+      await securityAlert(guild, "nuke", "Alerta Anti-Nuke",
         `Acción detectada: **${entry.action}**\nResponsable: <@${executorId}>.\nRevisá los registros de auditoría.`,
-        0xE74C3C);
+        executorId);
     }
 
     if (config.security.antiPermission && isPermissionChange) {
-      await log(guild, "Alerta Anti-Permission",
+      await securityAlert(guild, "permission", "Alerta Anti-Permission",
         `Cambio de permisos o estructura detectado.\nAcción: **${entry.action}**\nResponsable: <@${executorId}>.`,
-        0xE74C3C);
+        executorId);
+    }
+
+    // Anti-Channel-Delete: cada 3 canales eliminados en 30 segundos.
+    if (config.security.antiChannelDelete && entry.action === AuditLogEvent.ChannelDelete) {
+      const count = bucketCount(`${guild.id}:${executorId}:channel-delete`, 30000);
+
+      if (count % 3 === 0) {
+        await securityAlert(guild, "channel-delete", "Anti-Channel-Delete",
+          `<@${executorId}> eliminó **${count}** canales en menos de 30 segundos.\nRevisá los registros de auditoría.`,
+          executorId);
+      }
+    }
+
+    // Anti-Mass-Role: cada 5 cambios de roles en 30 segundos.
+    if (config.security.antiMassRole && isRoleChange) {
+      const count = bucketCount(`${guild.id}:${executorId}:mass-role`, 30000);
+
+      if (count % 5 === 0) {
+        await securityAlert(guild, "mass-role", "Anti-Mass-Role",
+          `<@${executorId}> hizo **${count}** cambios de roles en menos de 30 segundos.\nRevisá los registros de auditoría.`,
+          executorId);
+      }
     }
   } catch (error) {
     console.error("Error en auditoría:", error);
   }
 });
+
+// Limpieza periódica de los contadores en memoria.
+setInterval(() => {
+  const now = Date.now();
+
+  const prune = (map, windowMs, getTime) => {
+    for (const [key, list] of map) {
+      const kept = list.filter(item => now - getTime(item) < windowMs);
+      if (kept.length) map.set(key, kept);
+      else map.delete(key);
+    }
+  };
+
+  prune(recentMessages, 60000, item => item.time);
+  prune(mentionHistory, 60000, item => item.time);
+  prune(joinHistory, 60000, time => time);
+  prune(auditBuckets, 60000, time => time);
+
+  for (const [key, time] of alertThrottle) {
+    if (now - time > 60000) alertThrottle.delete(key);
+  }
+}, 5 * 60 * 1000).unref();
 
 // ======================================
 // INTERACTIONS: SLASH AND BUTTONS
@@ -1968,6 +2967,10 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (!interaction.isButton()) return;
+
+    // Los botones de /massrole los maneja un collector dentro del propio comando.
+    if (!interaction.customId.startsWith("sentinel_ticket_")) return;
+
     if (!interaction.guild) {
       return interaction.reply({
         content: "Este botón solo funciona dentro de un servidor.",
