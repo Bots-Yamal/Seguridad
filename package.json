@@ -1,0 +1,16 @@
+
+{
+  "name": "sentinel-security",
+  "version": "1.0.0",
+  "description": "Bot de moderación y seguridad para Discord",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
