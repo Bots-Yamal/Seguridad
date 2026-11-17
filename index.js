@@ -12,6 +12,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
   AuditLogEvent,
   ComponentType
 } = require("discord.js");
@@ -343,6 +344,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName("help")
     .setDescription("Ver todos los comandos de Sentinel Security"),
+
+  new SlashCommandBuilder()
+    .setName("support")
+    .setDescription("Abrir el centro de soporte y crear un ticket"),
 
   new SlashCommandBuilder()
     .setName("ping")
@@ -705,40 +710,57 @@ const commands = [
 // HELP
 // ======================================
 
-function helpEmbed() {
+const HELP_PAGES = {
+  overview: {
+    title: "🛡️ Sentinel Security — Ayuda",
+    description: "Elegí una categoría en el menú para ver los comandos disponibles. También podés usar el prefijo `.`."
+  },
+  tickets: {
+    title: "🎫 Tickets y soporte",
+    description: "`/support` abre el centro de soporte.\n`/ticket-setup` publica el panel y configura la categoría.\n`/ticket-close` cierra un ticket.\n`/ticket-reopen` reabre un ticket (soporte).\n`/ticket-add` y `/ticket-remove` gestionan participantes."
+  },
+  moderation: {
+    title: "🛠️ Moderación",
+    description: "`/ban` · `/unban` · `/kick`\n`/timeout` · `/untimeout`\n`/warn` · `/warnings` · `/unwarn`\n`/history` · `/note` · `/modlogs`\n`/purge` · `/clear` · `/slowmode`\n`/lock` · `/unlock` · `/role` · `/nickname` · `/massrole`"
+  },
+  security: {
+    title: "🛡️ Protección",
+    description: "`/anti status` muestra el estado.\n`/anti enable` y `/anti disable` activan o desactivan una protección.\n`/security scan` revisa permisos necesarios.\n`/security alerts` muestra alertas guardadas.\n`/security alerts-channel` configura dónde enviarlas.\n`/security lockdown` y `/security unlockdown` controlan el bloqueo manual.\n`/automod` configura palabras y enlaces; `/whitelist` excluye usuarios."
+  },
+  admin: {
+    title: "⚙️ Administración",
+    description: "`/welcome` · `/goodbye` · `/autorole`\n`/modlogs` configura el canal de registros.\n`/automod` administra filtros de palabras y enlaces.\n`/language` cambia el idioma.\n`/say` · `/embed` · `/announce` · `/poll`"
+  },
+  info: {
+    title: "ℹ️ Información",
+    description: "`/ping` · `/uptime` · `/botinfo`\n`/serverinfo` · `/userinfo` · `/avatar` · `/channelinfo`\n`/help` vuelve a mostrar este menú."
+  }
+};
+
+function helpEmbed(page = "overview") {
+  const selected = HELP_PAGES[page] || HELP_PAGES.overview;
   return new EmbedBuilder()
     .setColor(0x1677FF)
-    .setTitle("🛡️ Sentinel Security — Help")
-    .setDescription("Centro de comandos. También podés usar el prefijo `.`.")
-    .addFields(
-      {
-        name: "🛠️ Moderación",
-        value: "`/ban` `/unban` `/kick` `/timeout` `/untimeout`\n`/warn` `/unwarn` `/warnings` `/purge`\n`/slowmode` `/lock` `/unlock` `/role`\n`/nickname` `/history` `/note`\n`/clear` `/massrole` `/report`",
-        inline: false
-      },
-      {
-        name: "🛡️ Protección",
-        value: "`/anti status` `/anti enable` `/anti disable`\n`/security scan` `/security logs` `/security alerts`\n`/security lockdown` `/security unlockdown`\n`/whitelist` `/automod`",
-        inline: false
-      },
-      {
-        name: "⚙️ Administración",
-        value: "`/modlogs` `/welcome` `/goodbye` `/autorole`\n`/ticket-setup` `/ticket-close` `/ticket-reopen`\n`/ticket-add` `/ticket-remove` `/language`",
-        inline: false
-      },
-      {
-        name: "📢 Comunicación",
-        value: "`/say` `/embed` `/announce` `/poll`",
-        inline: false
-      },
-      {
-        name: "ℹ️ Información",
-        value: "`/ping` `/uptime` `/botinfo` `/serverinfo`\n`/userinfo` `/avatar` `/channelinfo` `/help`",
-        inline: false
-      }
-    )
+    .setTitle(selected.title)
+    .setDescription(selected.description)
     .setFooter({ text: "Sentinel Security • Moderation & Protection" })
     .setTimestamp();
+}
+
+function helpComponents(page = "overview") {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("sentinel_help_category")
+    .setPlaceholder("Elegí una categoría")
+    .addOptions(
+      { label: "Inicio", value: "overview", emoji: "🏠", default: page === "overview" },
+      { label: "Tickets y soporte", value: "tickets", emoji: "🎫", default: page === "tickets" },
+      { label: "Moderación", value: "moderation", emoji: "🛠️", default: page === "moderation" },
+      { label: "Protección", value: "security", emoji: "🛡️", default: page === "security" },
+      { label: "Administración", value: "admin", emoji: "⚙️", default: page === "admin" },
+      { label: "Información", value: "info", emoji: "ℹ️", default: page === "info" }
+    );
+
+  return [new ActionRowBuilder().addComponents(menu)];
 }
 
 // ======================================
@@ -1249,9 +1271,9 @@ async function runAutoMod(message, config) {
   const badWord = automod.words.find(word => wordRegex(word).test(text));
 
   if (badWord) {
-    await message.delete().catch(() => {});
+    const deleted = await message.delete().then(() => true).catch(() => false);
     await securityAlert(guild, "automod-word", "AutoMod: palabra bloqueada",
-      `${where}\nFiltro activado: ||${badWord}||`, author.id);
+      `${where}\nFiltro activado: ||${badWord}||\nMensaje eliminado: ${deleted ? "sí" : "no; revisá el permiso Manage Messages del bot en este canal"}.`, author.id);
     return true;
   }
 
@@ -1262,9 +1284,9 @@ async function runAutoMod(message, config) {
     );
 
     if (blocked.length) {
-      await message.delete().catch(() => {});
+      const deleted = await message.delete().then(() => true).catch(() => false);
       await securityAlert(guild, "automod-link", "AutoMod: enlace bloqueado",
-        `${where}\nDominios: ${blocked.slice(0, 5).map(host => `\`${host}\``).join(", ")}`, author.id);
+        `${where}\nDominios: ${blocked.slice(0, 5).map(host => `\`${host}\``).join(", ")}\nMensaje eliminado: ${deleted ? "sí" : "no; revisá el permiso Manage Messages del bot en este canal"}.`, author.id);
       return true;
     }
   }
@@ -1734,6 +1756,9 @@ async function adminTools(interaction, name, actor, config) {
 
 async function slashCommand(interaction) {
   const guild = interaction.guild;
+  if (!guild) {
+    return reply(interaction, "Este comando solo funciona dentro de un servidor.", 0xE74C3C);
+  }
   const config = getServer(guild.id);
   const name = interaction.commandName;
   const user = interaction.user;
@@ -1793,7 +1818,30 @@ async function slashCommand(interaction) {
   // INFORMATION
 
   if (name === "help") {
-    return interaction.editReply({ embeds: [helpEmbed()] });
+    return interaction.editReply({
+      embeds: [helpEmbed()],
+      components: helpComponents()
+    });
+  }
+
+  if (name === "support") {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("sentinel_ticket_create")
+        .setLabel("Crear ticket")
+        .setEmoji("🎫")
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    return interaction.editReply({
+      embeds: [
+        makeEmbed(
+          "Centro de soporte",
+          "Presioná el botón para abrir un ticket privado. El equipo de soporte podrá responderte allí.\n\nSi el servidor todavía no configuró tickets, pedile a un administrador que ejecute `/ticket-setup`."
+        )
+      ],
+      components: [row]
+    });
   }
 
   if (name === "ping") {
@@ -2039,18 +2087,41 @@ async function slashCommand(interaction) {
     const sub = interaction.options.getSubcommand();
 
     if (sub === "status") {
+      const labels = {
+        antiRaid: "Anti-Raid",
+        antiNuke: "Anti-Nuke",
+        antiSpam: "Anti-Spam",
+        antiFlood: "Anti-Flood",
+        antiMentions: "Anti-Mass-Mention",
+        antiPhishing: "Anti-Phishing",
+        antiWebhook: "Anti-Webhook",
+        antiBot: "Anti-Bot",
+        antiPermission: "Anti-Permission",
+        antiMassRole: "Anti-Mass-Role",
+        antiChannelDelete: "Anti-Channel-Delete",
+        antiMentionSpam: "Anti-Mention-Spam"
+      };
       const lines = Object.entries(config.security)
         .filter(([key]) => key !== "lockdown")
-        .map(([key, value]) => `**${key}:** ${value ? "🟢 Activado" : "🔴 Desactivado"}`);
+        .map(([key, value]) => `**${labels[key] || key}:** ${value ? "🟢 Activado" : "🔴 Desactivado"}`);
+      const activeCount = Object.entries(config.security)
+        .filter(([key, value]) => key !== "lockdown" && value)
+        .length;
+      const alertsReady = Boolean(config.securityChannel || config.logs);
 
-      return reply(interaction, lines.join("\n"));
+      return reply(interaction,
+        `${lines.join("\n")}\n\n**Protecciones activas:** ${activeCount}\n**Canal de alertas:** ${alertsReady ? "configurado" : "sin configurar"}${alertsReady ? "" : "\nConfigurá `/security alerts-channel` para recibir alertas."}`);
     }
 
     const key = interaction.options.getString("proteccion");
+    if (!Object.prototype.hasOwnProperty.call(config.security, key) || key === "lockdown") {
+      return reply(interaction, "Esa protección no existe.", 0xE74C3C);
+    }
     config.security[key] = sub === "enable";
     saveData();
 
-    return reply(interaction, `**${key}** ${sub === "enable" ? "activado" : "desactivado"}.`);
+    return reply(interaction,
+      `**${key}** ${sub === "enable" ? "activado" : "desactivado"}.${sub === "enable" && !config.securityChannel && !config.logs ? "\nTodavía no hay un canal configurado para mostrar las alertas; usá `/security alerts-channel`." : ""}`);
   }
 
   if (name === "security") {
@@ -2104,10 +2175,24 @@ async function slashCommand(interaction) {
       ];
 
       const result = checks.map(([label, permission]) =>
-        `${botMember.permissions.has(permission) ? "🟢" : "🔴"} ${label}`
+        `${botMember?.permissions.has(permission) ? "🟢" : "🔴"} ${label}`
       );
 
-      return reply(interaction, `**Revisión de permisos del bot**\n${result.join("\n")}\n\nEste análisis revisa permisos; no garantiza protección total.`);
+      const requiredIntents = [
+        ["GuildMembers", GatewayIntentBits.GuildMembers],
+        ["MessageContent", GatewayIntentBits.MessageContent],
+        ["GuildModeration", GatewayIntentBits.GuildModeration]
+      ];
+      const intentResults = requiredIntents.map(([label, intent]) =>
+        `${client.options.intents.has(intent) ? "🟢" : "🔴"} Intent solicitado: ${label}`
+      );
+      const active = Object.entries(config.security)
+        .filter(([key, value]) => key !== "lockdown" && value)
+        .map(([key]) => key);
+      const alertChannel = config.securityChannel || config.logs;
+
+      return reply(interaction,
+        `**Permisos del bot**\n${result.join("\n")}\n\n**Intents solicitados por el código**\n${intentResults.join("\n")}\n\n**Canal de alertas:** ${alertChannel ? `<#${alertChannel}>` : "sin configurar"}\n**Protecciones activas:** ${active.length ? active.join(", ") : "ninguna"}\n\nLos intents privilegiados también deben habilitarse en el Developer Portal. Anti-Nuke y Anti-Permission registran alertas; no pueden deshacer acciones ya ejecutadas.`);
     }
   }
 
@@ -2295,7 +2380,10 @@ async function prefixCommand(message) {
   }
 
   if (command === "help") {
-    return message.reply({ embeds: [helpEmbed()] });
+    return message.reply({
+      embeds: [helpEmbed()],
+      components: helpComponents()
+    });
   }
 
   if (command === "ping") {
@@ -2618,22 +2706,23 @@ async function messageProtections(message, isEdit = false) {
   const now = Date.now();
   const content = message.content || "";
   const where = `Usuario: <@${message.author.id}>\nCanal: <#${message.channel.id}>`;
+  const deleteMessage = () => message.delete().then(() => true).catch(() => false);
 
   // Anti-phishing: heurística básica, puede generar falsos positivos.
   if (config.security.antiPhishing &&
       phishingPatterns.some(pattern => pattern.test(content))) {
-    await message.delete().catch(() => {});
+    const deleted = await deleteMessage();
     await securityAlert(guild, "phishing", "Posible phishing",
-      `Mensaje sospechoso.\n${where}`, message.author.id);
+      `Mensaje sospechoso.\n${where}\nMensaje eliminado: ${deleted ? "sí" : "no; revisá el permiso Manage Messages del bot en este canal"}.`, message.author.id);
     return true;
   }
 
   // Anti mass mention (un solo mensaje).
   if (config.security.antiMentions &&
       (message.mentions.users.size >= 5 || message.mentions.everyone)) {
-    await message.delete().catch(() => {});
+    const deleted = await deleteMessage();
     await securityAlert(guild, "mention", "Anti-Mass-Mention",
-      `Menciones masivas.\n${where}`, message.author.id);
+      `Menciones masivas.\n${where}\nMensaje eliminado: ${deleted ? "sí" : "no; revisá el permiso Manage Messages del bot en este canal"}.`, message.author.id);
     return true;
   }
 
@@ -2652,7 +2741,7 @@ async function messageProtections(message, isEdit = false) {
 
       if (total >= MENTION_LIMIT) {
         mentionHistory.delete(key);
-        await message.delete().catch(() => {});
+        const deleted = await deleteMessage();
 
         let timedOut = false;
 
@@ -2663,7 +2752,7 @@ async function messageProtections(message, isEdit = false) {
         }
 
         await securityAlert(guild, "mention-spam", "Anti-Mention-Spam",
-          `${total} menciones en ${MENTION_WINDOW_MS / 1000} segundos.\n${where}\nTimeout de 5 minutos: ${timedOut ? "aplicado" : "no aplicado"}.`,
+          `${total} menciones en ${MENTION_WINDOW_MS / 1000} segundos.\n${where}\nMensaje eliminado: ${deleted ? "sí" : "no; revisá Manage Messages"}.\nTimeout de 5 minutos: ${timedOut ? "aplicado" : "no aplicado; revisá Moderate Members y la jerarquía de roles"}.`,
           message.author.id);
         return true;
       }
@@ -2686,11 +2775,11 @@ async function messageProtections(message, isEdit = false) {
 
     if ((config.security.antiSpam && repeated) ||
         (config.security.antiFlood && flooding)) {
-      await message.delete().catch(() => {});
+      const deleted = await deleteMessage();
 
       if (!throttled(`spam:${key}`, 30000)) {
         await securityAlert(guild, "spam", "Anti-Spam / Anti-Flood",
-          `Actividad repetitiva.\n${where}`, message.author.id);
+          `Actividad repetitiva.\n${where}\nMensaje eliminado: ${deleted ? "sí" : "no; revisá el permiso Manage Messages del bot en este canal"}.`, message.author.id);
       }
 
       return true;
@@ -2799,9 +2888,9 @@ client.on("guildMemberAdd", async member => {
       const recent = history.filter(time => Date.now() - time < 10000);
       joinHistory.set(member.guild.id, recent);
 
-      if (recent.length === 8) {
+      if (recent.length >= 8 && !throttled(`raid:${member.guild.id}`, 30000)) {
         await securityAlert(member.guild, "raid", "Posible Raid",
-          `${recent.length} usuarios entraron en 10 segundos. Revisá el servidor.`);
+          `${recent.length} usuarios entraron en 10 segundos. Revisá el servidor.\nEsta protección alerta; no activa un bloqueo automático.`);
       }
     }
 
@@ -2964,6 +3053,15 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply({ ephemeral: true });
       await slashCommand(interaction);
       return;
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId !== "sentinel_help_category") return;
+      const page = interaction.values[0];
+      return interaction.update({
+        embeds: [helpEmbed(page)],
+        components: helpComponents(page)
+      });
     }
 
     if (!interaction.isButton()) return;
